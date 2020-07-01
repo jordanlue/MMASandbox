@@ -1,0 +1,577 @@
+---
+title: "Credit Card Defaults: Building an Ensemble Model for Classification"
+output: html_notebook
+---
+
+# Overview
+A major bank wants to better predict the likelihood of default for its customers, as well as identify the key drivers that determine this likelihood. In this notebook, we explored building a classification model using various algorithms. We split the dataset into a training and testing dataset, and compared the algorithms on their AUCs and expected profits (knowing the return values based on the prediction outcome). Finally, various ensembles were created to see if the AUC and profit can be further improved.
+
+
+## Data Loading
+```{r}
+library(readxl)
+library(dplyr)
+library(xgboost)
+pacman::p_load("caret","ROCR","lift","randomForest", "glmnet","MASS","e1071")  #Check, and if needed install the necessary packages
+```
+
+```{r}
+cred_df <- read_excel("C:\\Users\\jdonv\\OneDrive - Queen's University\\Predictive Analytics\\A3\\MMA867 A3 -- credit data.xlsx")
+```
+
+We have a seperate holdout set to which we do not have the output variable. This has been designed for grading purposes for the MMA 867 predictive analytics course.
+```{r}
+holdout_df <- read_excel("C:\\Users\\jdonv\\OneDrive - Queen's University\\Predictive Analytics\\A3\\MMA867 A3 -- new applications.xlsx")
+```
+
+```{r}
+holdout_df$default_0 <- 0
+holdout_df$Set <- "Test"
+cred_df$Set <- "Train"
+```
+
+```{r}
+cred_df <- rbind(cred_df, holdout_df)
+```
+
+```{r}
+str(cred_df)
+```
+
+There are no missing values in the dataset.
+```{r}
+sum(is.na(cred_df))
+```
+
+Recode factors
+```{r}
+cred_df$SEX <- as.factor(cred_df$SEX)
+cred_df$EDUCATION <- as.factor(cred_df$EDUCATION)
+cred_df$MARRIAGE <- as.factor(cred_df$MARRIAGE)
+cred_df$PAY_1 <- as.factor(cred_df$PAY_1)
+cred_df$PAY_2 <- as.factor(cred_df$PAY_2)
+cred_df$PAY_3 <- as.factor(cred_df$PAY_3)
+cred_df$PAY_4 <- as.factor(cred_df$PAY_4)
+cred_df$PAY_5 <- as.factor(cred_df$PAY_5)
+cred_df$PAY_6 <- as.factor(cred_df$PAY_6)
+cred_df$default_0 <- as.factor(cred_df$default_0)
+```
+
+```{r}
+cred_df <- cred_df %>% dplyr::select(-ID)
+```
+
+```{r}
+cred_df_dummies <- model.matrix(default_0~ ., data = cred_df)[,-1]
+cred_df_dummies<-as.data.frame(cred_df_dummies)
+```
+
+Train-Test Split
+```{r}
+cred_df.Train <- filter(cred_df_dummies, SetTrain == 1) %>% dplyr::select(-SetTrain) #Full Training/Testing set
+cred_df.Holdout <- filter(cred_df_dummies, SetTrain == 0) %>% dplyr::select(-SetTrain) #Holdout Set
+
+cred_df.TrainNonDummies <- filter(cred_df, Set == "Train") %>% dplyr::select(-Set) #Some models will pass the Train/Test set without dummies 
+cred_df.HoldoutNonDummies <- filter(cred_df, Set == "Test") %>% dplyr::select(-Set) #Some models will pass the holdout set without dummies 
+
+set.seed(77850) #set a random number generation seed to ensure that the split is the same everytime
+inTrain <- createDataPartition(y = cred_df.TrainNonDummies$default_0,
+                               p = 0.8, list = FALSE)
+
+x_train <-cred_df.Train[ inTrain,]
+x_test <- cred_df.Train[ -inTrain,]
+y_train <-cred_df.TrainNonDummies[ inTrain,]$default_0
+y_test <-cred_df.TrainNonDummies[ -inTrain,]$default_0
+
+training <- cred_df.TrainNonDummies[ inTrain,]
+testing <- cred_df.TrainNonDummies[ -inTrain,]
+
+y_all <- cred_df.TrainNonDummies$default_0
+
+y_ho <-cred_df.HoldoutNonDummies$default_0
+
+```
+
+Before moving into the modelling section, it should be noted that various models were attempted with feature engineering, outlier treatment, and addressing rare categories. They yielded lower AUCs on the test set and so the baseline models were kept.
+
+
+## Random Forest Model
+### RF - Training Model
+```{r}
+model_forest <- randomForest(x = x_train, 
+                             y = y_train, 
+                             type="classification",
+                             importance=TRUE,
+                             ntree = 500,           # hyperparameter: number of trees in the forest
+                             mtry = 10,             # hyperparameter: number of random columns to grow each tree
+                             nodesize = 10,         # hyperparameter: min number of datapoints on the leaf of each tree
+                             maxnodes = 10,         # hyperparameter: maximum number of leafs of a tree
+                             cutoff = c(0.5, 0.5)   # hyperparameter: how the voting works; (0.5, 0.5) means majority vote
+) 
+
+varImpPlot(model_forest) # plots variable importances; use importance(model_forest) to print the values
+
+```
+### RF - Evaluation on Test Set
+```{r}
+###Finding predicitons: probabilities and classification
+forest_probabilities<-predict(model_forest,newdata=x_test,type="prob") #Predict probabilities -- an array with 2 columns: for not retained (class 0) and for retained (class 1)
+
+####ROC Curve
+forest_ROC_prediction <- prediction(forest_probabilities[,2], y_test) #Calculate errors
+forest_ROC <- performance(forest_ROC_prediction,"tpr","fpr") #Create ROC curve data
+plot(forest_ROC) #Plot ROC curve
+```
+
+```{r}
+####AUC (area under curve)
+AUC.tmp <- performance(forest_ROC_prediction,"auc") #Create AUC data
+forest_AUC <- as.numeric(AUC.tmp@y.values) #Calculate AUC
+forest_AUC #Display AUC value: 90+% - excellent, 80-90% - very good, 70-80% - good, 60-70% - so so, below 60% - not much value
+```
+
+#### Expected Profit
+For each client in the pilot, if the credit is issued and repaid, then the bank earns a
+profit of 25,000*2% + 1,000 = 1,500; if the credit is granted but the client defaults, then the bank
+loses 25,000 ‐ 20,000 = 5,000? And if the credit is not issued, then the profit=loss=0. We boil this down into below:  
+  
+Predicted = 0, Default = 0 -> 1500 (TN)  
+Predicted = 0, Default = 1 -> -5000 (FN)  
+Predicted = 1, Default = 0 or 1 -> 0  
+  
+We will want to minimize False Negatives (Predicted non-default (0) but customer actually defaults (1)). A lower threshold means the model is more likely to predict positive.  
+  
+### RF - Expected Profit in Test Set @ Various Thresholds
+```{r}
+thresholds <- seq(0.05, 0.95, by=0.01)
+ep_df <- data.frame(threshold = numeric(), profit = numeric())
+
+for (i in thresholds) {
+  forest_classification<-rep("1",4799)
+  forest_classification[forest_probabilities[,2]<i]="0" #Predict classification using 0.5 threshold. Why 0.5 and not 0.6073? Use the same as in cutoff above
+  forest_classification<-as.factor(forest_classification)
+  
+  cmatrix <- confusionMatrix(forest_classification,y_test, positive="1") #Display confusion matrix. Note,
+  TN <- cmatrix[2][[1]][[1]]
+  TP <- cmatrix[2][[1]][[4]]
+  FP <- cmatrix[2][[1]][[2]]
+  FN <- cmatrix[2][[1]][[3]]
+  expected_profit <- 1500*TN - 5000*FN
+  ep_df<-rbind(ep_df,data.frame(threshold=i,profit=expected_profit))
+}
+```
+
+```{r}
+plot(ep_df)
+
+```
+```{r}
+ep_df[which.max(ep_df$profit),]
+```
+
+```{r}
+model_scores <- data.frame(Model = character(), `Test AUC` = numeric(), `Best Threshold` = numeric(), `Best Expected Profit` = numeric())
+model_scores <- rbind(model_scores,data.frame(Model="rf",`Test AUC`=forest_AUC,`Best Threshold`=ep_df[which.max(ep_df$profit),]$threshold,`Best Expected Profit`=ep_df[which.max(ep_df$profit),]$profit))
+```
+
+### RF - Train on entire data set
+We train the RF model as well as each other model on the entire dataset for the final prediction on our holdout set.
+```{r}
+model_forest_all <- randomForest(x = cred_df.Train, 
+                             y = y_all, 
+                             type="classification",
+                             importance=TRUE,
+                             ntree = 500,           # hyperparameter: number of trees in the forest
+                             mtry = 10,             # hyperparameter: number of random columns to grow each tree
+                             nodesize = 10,         # hyperparameter: min number of datapoints on the leaf of each tree
+                             maxnodes = 10,         # hyperparameter: maximum number of leafs of a tree
+                             cutoff = c(0.5, 0.5)   # hyperparameter: how the voting works; (0.5, 0.5) means majority vote
+) 
+```
+
+### RF - Predict on Holdout Set
+```{r}
+###Finding predicitons: probabilities and classification
+forest_probabilities_all<-predict(model_forest_all,newdata=cred_df.Holdout,type="prob") #Predict probabilities -- an array with 2 columns: for not retained (class 0) and for retained (class 1)
+```
+
+## XG Boost Model
+### XGB - Training Model
+```{r}
+model_XGboost<-xgboost(data = data.matrix(x_train), 
+                       label = as.numeric(as.character(y_train)), 
+                       eta = 0.1,       # hyperparameter: learning rate 
+                       max_depth = 20,  # hyperparameter: size of a tree in each boosting iteration
+                       nround=50,       # hyperparameter: number of boosting iterations  
+                       objective = "binary:logistic"
+)
+
+
+```
+
+### XGB - Evaluation on Test Set
+```{r}
+XGboost_prediction<-predict(model_XGboost,newdata=data.matrix(x_test), type="response") #Predict classification (for confusion matrix)
+
+####ROC Curve
+XGboost_ROC_prediction <- prediction(XGboost_prediction, y_test) #Calculate errors
+XGboost_ROC_testing <- performance(XGboost_ROC_prediction,"tpr","fpr") #Create ROC curve data
+plot(XGboost_ROC_testing) #Plot ROC curve
+```
+
+```{r}
+####AUC
+auc.tmp <- performance(XGboost_ROC_prediction,"auc") #Create AUC data
+XGboost_auc_testing <- as.numeric(auc.tmp@y.values) #Calculate AUC
+XGboost_auc_testing #Display AUC value: 90+% - excellent, 80-90% - very good, 70-80% - good, 60-70% - so so, below 60% - not much value
+```
+
+### XGB - Expected Profit in Test Set @ Various Thresholds
+```{r}
+ep_df <- data.frame(threshold = numeric(), profit = numeric())
+for (i in thresholds) {
+  cmatrix <- confusionMatrix(as.factor(ifelse(XGboost_prediction>i,1,0)),y_test,positive="1")
+  TN <- cmatrix[2][[1]][[1]]
+  TP <- cmatrix[2][[1]][[4]]
+  FP <- cmatrix[2][[1]][[2]]
+  FN <- cmatrix[2][[1]][[3]]
+  expected_profit <- 1500*TN - 5000*FN
+  ep_df<-rbind(ep_df,data.frame(threshold=i,profit=expected_profit))
+  
+}
+
+```
+
+```{r}
+plot(ep_df)
+```
+```{r}
+ep_df[which.max(ep_df$profit),]
+```
+
+```{r}
+model_scores <- rbind(model_scores,data.frame(Model="xgb",`Test AUC`=XGboost_auc_testing,`Best Threshold`=ep_df[which.max(ep_df$profit),]$threshold,`Best Expected Profit`=ep_df[which.max(ep_df$profit),]$profit))
+```
+
+### XGB - Train on entire data set
+```{r}
+model_XGboost_all<-xgboost(data = data.matrix(cred_df.Train), 
+                       label = as.numeric(as.character(y_all)), 
+                       eta = 0.1,       # hyperparameter: learning rate 
+                       max_depth = 20,  # hyperparameter: size of a tree in each boosting iteration
+                       nround=50,       # hyperparameter: number of boosting iterations  
+                       objective = "binary:logistic"
+)
+
+
+```
+
+### XGB - Predict on Holdout Set
+```{r}
+###Finding predicitons: probabilities and classification
+XGboost_prediction_all<-predict(model_XGboost_all,newdata=data.matrix(cred_df.Holdout), type="response") 
+```
+
+## Logistic Regression Model
+### Logistic Regression - Training Model
+```{r}
+model_logistic<-glm(default_0~., data=training, family="binomial"(link="logit"))
+```
+
+### Logistic Regression - Evaluation on Test Set
+```{r}
+###Finding predicitons: probabilities and classification
+logistic_probabilities<-predict(model_logistic,newdata=testing,type="response") #Predict probabilities
+
+####ROC Curve
+logistic_ROC_prediction <- prediction(logistic_probabilities, testing$default_0)
+logistic_ROC <- performance(logistic_ROC_prediction,"tpr","fpr") #Create ROC curve data
+plot(logistic_ROC) #Plot ROC curve
+
+```
+
+```{r}
+####AUC (area under curve)
+auc.tmp <- performance(logistic_ROC_prediction,"auc") #Create AUC data
+logistic_auc_testing <- as.numeric(auc.tmp@y.values) #Calculate AUC
+logistic_auc_testing #Display AUC value: 90+% - excellent, 80-90% - very good, 70-80% - good, 60-70% - so so, below 60% - not much value
+```
+
+### Logistic Regression - Expected Profit in Test Set @ Various Thresholds
+```{r}
+thresholds <- seq(0.05, 0.95, by=0.01)
+ep_df <- data.frame(threshold = numeric(), profit = numeric())
+
+for (i in thresholds) {
+  logistic_classification<-rep("1",4799)
+  logistic_classification[logistic_probabilities<i]="0" #Predict classification using 0.5 threshold. Why 0.5 and not 0.6073? Use the same as in cutoff above
+  logistic_classification<-as.factor(logistic_classification)
+  
+  cmatrix <- confusionMatrix(logistic_classification,y_test, positive="1") #Display confusion matrix. Note,
+  TN <- cmatrix[2][[1]][[1]]
+  TP <- cmatrix[2][[1]][[4]]
+  FP <- cmatrix[2][[1]][[2]]
+  FN <- cmatrix[2][[1]][[3]]
+  expected_profit <- 1500*TN - 5000*FN
+  ep_df<-rbind(ep_df,data.frame(threshold=i,profit=expected_profit))
+}
+```
+
+```{r}
+plot(ep_df)
+```
+
+```{r}
+ep_df[which.max(ep_df$profit),]
+```
+
+```{r}
+model_scores <- rbind(model_scores,data.frame(Model="lr",`Test AUC`=logistic_auc_testing,`Best Threshold`=ep_df[which.max(ep_df$profit),]$threshold,`Best Expected Profit`=ep_df[which.max(ep_df$profit),]$profit))
+```
+
+### Logistic Regression - Train on entire data set
+```{r}
+model_logistic_all<-glm(default_0~., data=cred_df.TrainNonDummies, family="binomial"(link="logit"))
+```
+
+### Logistic Regression - Predict on Holdout Set
+```{r}
+###Finding predicitons: probabilities and classification
+logistic_probabilities_all<-predict(model_logistic_all,newdata=cred_df.HoldoutNonDummies,type="response")
+```
+
+## Ensemble Models
+### Ensemble Models - Averages - Evaluation on Test Set
+```{r}
+ensemble_probs<-data.frame(rf=forest_probabilities[,2], xg=XGboost_prediction, lr=logistic_probabilities)
+```
+
+```{r}
+ensemble_probs$Avg<-(ensemble_probs$rf+ensemble_probs$lr+ensemble_probs$xg)/3
+```
+
+```{r}
+####ROC Curve
+ensemble_ROC_prediction <- prediction(ensemble_probs$Avg, testing$default_0)
+ensemble_ROC <- performance(ensemble_ROC_prediction,"tpr","fpr") #Create ROC curve data
+plot(ensemble_ROC) #Plot ROC curve
+```
+
+```{r}
+####AUC (area under curve)
+auc.tmp <- performance(ensemble_ROC_prediction,"auc") #Create AUC data
+ensemble_auc_testing <- as.numeric(auc.tmp@y.values) #Calculate AUC
+ensemble_auc_testing #Display AUC value: 90+% - excellent, 80-90% - very good, 70-80% - good, 60-70% - so so, below 60% - not much value
+```
+### Ensemble Models - Averages -  Expected Profit in Test Set @ Various Thresholds
+```{r}
+ep_df_ensemble <- data.frame(threshold = numeric(), profit = numeric())
+
+for (i in thresholds) {
+  ensemble_classification<-rep("1",4799)
+  ensemble_classification[ensemble_probs$Avg<i]="0" #Predict classification using 0.5 threshold. Why 0.5 and not 0.6073? Use the same as in cutoff above
+  ensemble_classification<-as.factor(ensemble_classification)
+  
+  cmatrix <- confusionMatrix(ensemble_classification,y_test, positive="1") #Display confusion matrix. Note,
+  TN <- cmatrix[2][[1]][[1]]
+  TP <- cmatrix[2][[1]][[4]]
+  FP <- cmatrix[2][[1]][[2]]
+  FN <- cmatrix[2][[1]][[3]]
+  expected_profit <- 1500*TN - 5000*FN
+  ep_df_ensemble<-rbind(ep_df_ensemble,data.frame(threshold=i,profit=expected_profit))
+}
+```
+
+```{r}
+plot(ep_df_ensemble)
+```
+```{r}
+ep_df_ensemble[which.max(ep_df_ensemble$profit),]
+```
+
+```{r}
+model_scores <- rbind(model_scores,data.frame(Model="avg pred",`Test AUC`=ensemble_auc_testing,`Best Threshold`=ep_df_ensemble[which.max(ep_df_ensemble$profit),]$threshold,`Best Expected Profit`=ep_df_ensemble[which.max(ep_df_ensemble$profit),]$profit))
+```
+
+### Ensemble Models - Majority Voting -  Expected Profit in Test Set @ Various Thresholds
+With the majority voting model, we cannot calculate AUC, so we will only use expected profit on the test set.
+
+```{r}
+ep_df_ensemble_maj <- data.frame(threshold = numeric(), profit = numeric())
+
+for (i in thresholds) {
+  ensemble_classification<-rep("1",4799)
+  ensemble_probs$rf_class <- 1
+  ensemble_probs$xg_class <- 1
+  ensemble_probs$lr_class <- 1
+  
+  ensemble_probs$rf_class[ensemble_probs$rf<i]=0
+  ensemble_probs$xg_class[ensemble_probs$xg<i]=0
+  ensemble_probs$lr_class[ensemble_probs$lr<i]=0
+  
+  ensemble_probs$sum <- ensemble_probs$rf_class + ensemble_probs$xg_class + ensemble_probs$lr_class
+  
+  ensemble_classification[ensemble_probs$sum<2]="0" 
+  ensemble_classification<-as.factor(ensemble_classification)
+  
+  cmatrix <- confusionMatrix(ensemble_classification,y_test, positive="1")
+  TN <- cmatrix[2][[1]][[1]]
+  TP <- cmatrix[2][[1]][[4]]
+  FP <- cmatrix[2][[1]][[2]]
+  FN <- cmatrix[2][[1]][[3]]
+  expected_profit <- 1500*TN - 5000*FN
+  ep_df_ensemble_maj<-rbind(ep_df_ensemble_maj,data.frame(threshold=i,profit=expected_profit))
+}
+```
+
+```{r}
+plot(ep_df_ensemble_maj)
+```
+```{r}
+ep_df_ensemble_maj[which.max(ep_df_ensemble_maj$profit),]
+```
+```{r}
+model_scores <- rbind(model_scores,data.frame(Model="maj vote",`Test AUC`=0,`Best Threshold`=ep_df_ensemble_maj[which.max(ep_df_ensemble_maj$profit),]$threshold,`Best Expected Profit`=ep_df_ensemble_maj[which.max(ep_df_ensemble_maj$profit),]$profit))
+```
+
+```{r}
+model_scores
+```
+
+
+```{r}
+ggplot(model_scores) +
+ aes(x = Model, weight = Test.AUC) +
+ geom_bar(fill = "#0c4c8a") +
+ labs(y = "Test AUC Score", title = "AUC Scores on Test Set by Algorithm") +
+ theme_minimal()
+```
+
+```{r}
+ggplot(model_scores) +
+ aes(x = Model, weight = Best.Expected.Profit) +
+ geom_bar(fill = "#0c4c8a") +
+ labs(y = "Expected Profit", title = "Expected Profit on Test Set by Algorithm") +
+ theme_minimal()
+```
+
+We observed a higher test AUC on the average prediction ensemble, and a higher expected profit on both the average prediction ensemble and majority vote ensemble.  
+  
+For the prediction on the holdout set, we used the majority voting due to this model having a higher accuracy (79.27% vs 77.93%) given the similar expected profits.
+  
+#### Final Confusion Matrix - Average Ensemble
+```{r}
+i=0.16
+ensemble_classification<-rep("1",4799)
+ensemble_classification[ensemble_probs$Avg<i]="0" #Predict classification using 0.5 threshold. Why 0.5 and not 0.6073? Use the same as in cutoff above
+ensemble_classification<-as.factor(ensemble_classification)
+  
+cmatrix <- confusionMatrix(ensemble_classification,y_test, positive="1") #Display confusion matrix.
+cmatrix
+```
+
+#### Final Confusion Matrix - Majority Vote Ensemble
+```{r}
+i=0.2
+ensemble_classification<-rep("1",4799)
+ensemble_probs$rf_class <- 1
+ensemble_probs$xg_class <- 1
+ensemble_probs$lr_class <- 1
+  
+ensemble_probs$rf_class[ensemble_probs$rf<i]=0
+ensemble_probs$xg_class[ensemble_probs$xg<i]=0
+ensemble_probs$lr_class[ensemble_probs$lr<i]=0
+  
+ensemble_probs$sum <- ensemble_probs$rf_class + ensemble_probs$xg_class + ensemble_probs$lr_class
+  
+ensemble_classification[ensemble_probs$sum<2]="0" 
+ensemble_classification<-as.factor(ensemble_classification)
+  
+cmatrix <- confusionMatrix(ensemble_classification,y_test, positive="1") #Display confusion matrix. Note,
+cmatrix
+```
+
+### Ensemble Models - Majority Voting - Predict on Holdout Set
+```{r}
+ensemble_probs_all<-data.frame(rf=forest_probabilities_all[,2], xg=XGboost_prediction_all, lr=logistic_probabilities_all)
+```
+
+```{r}
+ensemble_probs_all$Avg<-(ensemble_probs_all$rf+ensemble_probs_all$lr+ensemble_probs_all$xg)/3
+```
+
+```{r}
+i = 0.2
+ensemble_classification<-rep("1",1000)
+ensemble_probs_all$rf_class <- 1
+ensemble_probs_all$xg_class <- 1
+ensemble_probs_all$lr_class <- 1
+  
+ensemble_probs_all$rf_class[ensemble_probs_all$rf<i]=0
+ensemble_probs_all$xg_class[ensemble_probs_all$xg<i]=0
+ensemble_probs_all$lr_class[ensemble_probs_all$lr<i]=0
+  
+ensemble_probs_all$sum <- ensemble_probs_all$rf_class + ensemble_probs_all$xg_class + ensemble_probs_all$lr_class
+  
+ensemble_classification[ensemble_probs_all$sum<2]="0" 
+
+```
+
+```{r}
+#write.csv(ensemble_classification, "holdout_pred.csv")
+```
+
+
+### Further Insights
+#### Which three of 1 000 pilot clients are most likely to repay the loan if it were granted to them?
+#### Which three of 1 000 pilot clients are least likely to repay the loan if it were granted to them?
+
+```{r}
+cust_probs_df <- cbind(holdout_df, prob=ensemble_probs_all$Avg)
+```
+
+Most likely to default:
+```{r}
+top_n(cust_probs_df, 3, prob)
+```
+
+Least likely to default
+```{r}
+top_n(cust_probs_df, -3, prob)
+```
+
+We are also asked to consider what happens to our confusion matrix, sensitivty, specificity, and precision as we increase the threshold value. We designed a simple for loop to illustrate what occurs.
+
+```{r}
+cmatrix
+```
+```{r}
+conf_thrsh_df <- data.frame(threshold=numeric(),TN=numeric(),TP=numeric(),FP=numeric(),FN=numeric(),Sensitivity=numeric(),Specificity=numeric(),Total_Yes_Preds=numeric(),Total_Correct_Yes_Perc=numeric())
+thresholds <- seq(0.05, 0.95, by=0.1)
+i=0.05
+for (i in thresholds) {
+  ensemble_classification<-rep("1",4799)
+  ensemble_classification[ensemble_probs$Avg<i]="0"
+  ensemble_classification<-as.factor(ensemble_classification)
+    
+  cmatrix <- confusionMatrix(ensemble_classification,y_test, positive="1")
+  TN <- cmatrix[2][[1]][[1]]
+  TP <- cmatrix[2][[1]][[4]]
+  FP <- cmatrix[2][[1]][[2]]
+  FN <- cmatrix[2][[1]][[3]]
+  Sensitivity <- TP/(TP+FN)
+  Specificity <- TN/(FP+TN)
+  Total_Yes_Preds <- TP+FP
+  Total_Correct_Yes_Perc <- TP/(TP+FP)
+  conf_thrsh_df <- rbind(conf_thrsh_df,data.frame(threshold=i,TN=TN,
+                         TP=TP,FP=FP,FN=FN,Sensitivity=Sensitivity,
+                         Specificity=Specificity,Total_Yes_Preds=Total_Yes_Preds,
+                         Total_Correct_Yes_Perc=Total_Correct_Yes_Perc))
+}
+```
+
+```{r}
+conf_thrsh_df
+```
+
+
