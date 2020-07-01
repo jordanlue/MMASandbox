@@ -1,0 +1,639 @@
+---
+title: "Assignment 2 - NASA and Met Office Climate Change"
+output: html_notebook
+---
+
+```{r}
+library(dplyr) #select
+library(tidyr) #gather
+library(lubridate) #make_datetime
+library(ggplot2)
+library(forecast)
+library(ggfortify) #Forecast to df
+```
+
+# 1. NASA Climate Change
+## 1.1. Data Loading and Wrangling
+```{r}
+nasa_df <- read.csv("C:\\Users\\jdonv\\OneDrive - Queen's University\\Predictive Analytics\\A2\\GLB.Ts+dSST.csv", header=TRUE, sep=",", skip = 1)
+  
+```
+
+Drop the extra columns
+```{r}
+nasa_df <- select(nasa_df, -14:-19)
+```
+
+Unpivot the columns
+```{r}
+nasa_df <- gather(nasa_df, Month, Temp, 'Jan':'Dec')
+```
+Convert to month numbers
+```{r}
+nasa_df$MonthNum <- match(nasa_df$Month,month.abb)
+```
+
+Unpivot the data
+```{r}
+nasa_df<- nasa_df %>% 
+  select(Year, MonthNum, Temp) %>% 
+  mutate(YearMonth = make_datetime(Year, MonthNum, 1)) %>% select(YearMonth, Temp) %>% filter(YearMonth <= as.Date("2020-03-01"))
+```
+
+```{r}
+nasa_df$Temp <- as.numeric(nasa_df$Temp)
+
+#fahrenheit
+nasa_df$Temp <-  nasa_df$Temp * 9/5 + 32
+```
+
+```{r}
+nasa_df<-arrange(nasa_df, YearMonth)
+```
+
+Create time series
+```{r}
+nasa_ts <- ts(nasa_df$Temp,start=1880, frequency=12)
+```
+
+```{r}
+autoplot(nasa_ts) +
+  ggtitle("NASA Global Temperature Anomalies Since 1880") +
+  ylab("Temp Anomaly (F)") +
+  xlab("Year")
+```
+
+```{r}
+fit <- decompose(nasa_ts, type="multiplicative") #decompose using "classical" method, multiplicative form
+plot(fit)
+```
+
+```{r}
+fit <- decompose(nasa_ts, type="additive") #decompose using "classical" method, additive form
+plot(fit)
+```
+
+```{r}
+fit <- stl(nasa_ts, t.window=12, s.window="periodic") #decompose using STL (Season and trend using Loess)
+plot(fit)
+```
+
+## 1.2. Forecast Models
+ETS Models
+```{r}
+# Create exponential smoothing models: additive vs multiplicative noise (first A vs M), additive vs multiplicative trend (second A vs M) and automatic detection (third N vs Z) trend (AAZ), multiplicative (MMZ)
+nasa_AAZ <- ets(nasa_ts, model="AAZ", damped=FALSE)
+nasa_MMZ <- ets(nasa_ts, model="MMZ", damped=FALSE)
+
+# Create their prediction "cones" for 80 years (80 * 12 = 960, or through end of 2099 = 958)
+nasa_AAZ_pred <- forecast(nasa_AAZ, h=970, level=c(0.80,0.90))
+nasa_MMZ_pred <- forecast(nasa_MMZ, h=970, level=c(0.80,0.90))
+```
+
+```{r}
+# Compare the prediction "cones" visually
+par(mfrow=c(1,2))
+plot(nasa_AAZ_pred, xlab="Year", ylab="Predicted Temp")
+plot(nasa_MMZ_pred, xlab="Year", ylab="Predicted Temp")
+```
+
+TBATS Model
+```{r}
+#Create a trigonometric box-cox autoregressive trend seasonality (TBATS) model
+nasa_tbats <- tbats(nasa_ts)
+nasa_tbats_pred <-forecast(nasa_tbats, h=970, level=c(0.80,0.90))
+```
+
+```{r}
+plot(nasa_tbats_pred, xlab="Year", ylab="Predicted Temp")
+```
+
+Arima Model
+```{r}
+fit <- auto.arima(nasa_ts,seasonal=FALSE)
+fit
+```
+
+```{r include=FALSE}
+par(mfrow=c(1,1))
+Acf(residuals(fit))
+```
+
+```{r}
+plot(forecast(fit,970))
+```
+
+## 1.3. Model Evaluations
+```{r}
+# 1 year chunks
+nTest <- 12
+nTrain <- length(nasa_ts)- nTest - 1 
+nTrain
+```
+
+### ETS - AAN Evaluations
+```{r}
+accuracy.ets.aan=0 
+for (i in 1:10)
+{ 
+train <- window(nasa_ts, start=1880, end=c(2020-i,3))
+test <- window(nasa_ts, start=c(2020-i,4), end=c(2020-i+1,3))
+
+s <- ets(train, model="AAZ", damped=FALSE)
+sp<- predict(s,h=12)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, " March", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "March", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.ets.aan<-rbind(accuracy.ets.aan,accuracy(sp,test)[2,5])
+
+#print(sp$model)
+}
+accuracy.ets.aan<-accuracy.ets.aan[-1] 
+
+```
+
+### ETS - MMZ Evaluations
+```{r}
+accuracy.ets.mmn=0 
+for (i in 1:10)
+{ 
+train <- window(nasa_ts, start=1880, end=c(2020-i,3))
+test <- window(nasa_ts, start=c(2020-i,4), end=c(2020-i+1,3))
+
+s <- ets(train, model="MMZ", damped=FALSE)
+sp<- predict(s,h=12)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, " March", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "March", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.ets.mmn<-rbind(accuracy.ets.mmn,accuracy(sp,test)[2,5])
+
+#print(sp$model)
+}
+accuracy.ets.mmn<-accuracy.ets.mmn[-1] 
+
+```
+
+### TBATS Evaluations
+```{r}
+accuracy.tbats=0
+for (i in 1:10)
+{ 
+train <- window(nasa_ts, start=1880, end=c(2020-i,3)) 
+test <- window(nasa_ts, start=c(2020-i,4), end=c(2020-i+1,3))
+
+s <- tbats(train)
+sp<- predict(s,h=12)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, " March", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "March", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.tbats<-rbind(accuracy.tbats,accuracy(sp,test)[2,5])
+
+#print(sp$model)
+}
+accuracy.tbats<-accuracy.tbats[-1] 
+
+```
+
+### Arima Evaluations
+```{r}
+accuracy.arima=0 
+
+for (i in 1:10)
+{ 
+train <- window(nasa_ts, start=1880, end=c(2020-i,3)) 
+test <- window(nasa_ts, start=c(2020-i,4), end=c(2020-i+1,3)) 
+
+s <- auto.arima(train,seasonal=FALSE)
+arima_forecasts <- forecast(s,h=12)
+sp <- as.numeric(arima_forecasts$mean)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, " March", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "March", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.arima<-rbind(accuracy.arima,accuracy(sp,test)[1,5])
+
+#print(sp$model)
+}
+accuracy.arima<-accuracy.arima[-1] 
+
+```
+
+#### Evaluation Summary
+```{r}
+mean(accuracy.tbats)
+mean(accuracy.ets.aan)
+mean(accuracy.ets.mmn)
+mean(accuracy.arima)
+```
+
+```{r}
+arima_forecast <- forecast(fit,970, level=c(0.80,0.90))
+arima_nasa_df <- fortify(arima_forecast)
+nasa_AAN_df <- fortify(nasa_AAZ_pred)
+nasa_MMN_df <- fortify(nasa_MMZ_pred)
+nasa_tbats_df <- fortify(nasa_tbats_pred)
+```
+
+# 2. Met Office Climate Change
+## 2.1. Data Loading and Wrangling
+```{r}
+source("read_cru_hemi.r")
+```
+
+```{r}
+cru_df <- read_cru_hemi("C:\\Users\\jdonv\\OneDrive - Queen's University\\Predictive Analytics\\A2\\HadCRUT4-gl.dat")
+```
+
+```{r}
+#Stack the data and remove cover
+cru_df <- cru_df %>%
+  select(-starts_with("cover")) %>%
+  select(-starts_with("annual")) %>%
+  gather(month, anomaly, -year) %>%
+  mutate(month = gsub("month\\.", "", month)) %>%
+  mutate(month = as.numeric(month)) %>% 
+  mutate(YearMonth = make_datetime(year, month, 1)) %>% 
+  filter(YearMonth < as.Date("2020-03-01")) %>% select(YearMonth, anomaly)
+```
+
+```{r}
+cru_df<-arrange(cru_df, YearMonth)
+```
+
+```{r}
+#fahrenheit
+cru_df$anomaly <-  cru_df$anomaly * 9/5 + 32
+```
+
+```{r}
+cru_ts <- ts(cru_df$anomaly,start=1850, frequency=12)
+```
+
+```{r}
+autoplot(cru_ts) +
+  ggtitle("Met Office Global Temperature Anomalies Since 1880") +
+  ylab("Temp Anomaly (F)") +
+  xlab("Year")
+```
+
+## 2.2. Forecast Models
+ETS Models
+```{r}
+# Create exponential smoothing models: additive vs multiplicative noise (first A vs M), additive vs multiplicative trend (second A vs M) and automatic detection (third N vs Z) trend (AAZ), multiplicative (MMZ)
+cru_AAZ <- ets(cru_ts, model="AAZ", damped=FALSE)
+cru_MMZ <- ets(cru_ts, model="MMZ", damped=FALSE)
+
+# Create their prediction "cones" for 80 years (80 * 12 = 960, or through end of 2099 = 958)
+cru_AAZ_pred <- forecast(cru_AAZ, h=971, level=c(0.80,0.90))
+cru_MMZ_pred <- forecast(cru_MMZ, h=971, level=c(0.80,0.90))
+```
+
+```{r}
+# Compare the prediction "cones" visually
+par(mfrow=c(1,2))
+plot(cru_AAZ_pred, xlab="Year", ylab="Predicted Temp")
+plot(cru_MMZ_pred, xlab="Year", ylab="Predicted Temp")
+```
+
+TBATS Model
+```{r}
+#Create a trigonometric box-cox autoregressive trend seasonality (TBATS) model
+cru_tbats <- tbats(cru_ts)
+cru_tbats_pred <-forecast(cru_tbats, h=971, level=c(0.80,0.90))
+```
+
+```{r}
+plot(cru_tbats_pred, xlab="Year", ylab="Predicted Temp")
+```
+
+Arima Model
+```{r}
+fit <- auto.arima(cru_ts,seasonal=FALSE)
+fit
+```
+
+```{r}
+plot(forecast(fit,971))
+```
+
+## 1.3. Model Evaluations
+```{r}
+# 1 year chunks
+nTest <- 12
+nTrain <- length(cru_ts)- nTest - 1 
+nTrain
+```
+
+### ETS - AAN Evaluations
+```{r}
+accuracy.ets.aan=0 
+for (i in 1:10)
+{ 
+train <- window(cru_ts, start=1880, end=c(2020-i,2))
+test <- window(cru_ts, start=c(2020-i,3), end=c(2020-i+1,2))
+
+s <- ets(train, model="AAZ", damped=FALSE)
+sp<- predict(s,h=12)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, "February", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "February", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.ets.aan<-rbind(accuracy.ets.aan,accuracy(sp,test)[2,5])
+
+#print(sp$model)
+}
+accuracy.ets.aan<-accuracy.ets.aan[-1] 
+
+```
+
+### ETS - MMZ Evaluations
+```{r}
+accuracy.ets.mmn=0 
+for (i in 1:10)
+{ 
+train <- window(cru_ts, start=1880, end=c(2020-i,2))
+test <- window(cru_ts, start=c(2020-i,3), end=c(2020-i+1,2))
+
+s <- ets(train, model="MMZ", damped=FALSE)
+sp<- predict(s,h=12)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, "February", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "February", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.ets.mmn<-rbind(accuracy.ets.mmn,accuracy(sp,test)[2,5])
+
+#print(sp$model)
+}
+accuracy.ets.mmn<-accuracy.ets.mmn[-1] 
+
+```
+
+### TBATS Evaluations
+```{r}
+accuracy.tbats=0
+for (i in 1:10)
+{ 
+train <- window(cru_ts, start=1880, end=c(2020-i,2)) 
+test <- window(cru_ts, start=c(2020-i,3), end=c(2020-i+1,2))
+
+s <- tbats(train)
+sp<- predict(s,h=12)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, "February", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "February", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.tbats<-rbind(accuracy.tbats,accuracy(sp,test)[2,5])
+
+#print(sp$model)
+}
+accuracy.tbats<-accuracy.tbats[-1] 
+
+```
+
+### Arima Evaluations
+```{r}
+accuracy.arima=0 
+
+for (i in 1:10)
+{ 
+train <- window(cru_ts, start=1880, end=c(2020-i,2)) 
+test <- window(cru_ts, start=c(2020-i,3), end=c(2020-i+1,2)) 
+
+s <- auto.arima(train,seasonal=FALSE)
+arima_forecasts <- forecast(s,h=12)
+sp <- as.numeric(arima_forecasts$mean)
+
+cat("----------------------------------
+    
+    Data Partition",i,"
+    
+    Training Set includes",nTrain," time periods. Observations 1880 to", 2020-i, "February", "
+    Test Set includes 1 year. Observations", 2020-i, "April to", 2020-i+1, "February", "
+    
+    ")
+print(accuracy(sp,test))
+
+accuracy.arima<-rbind(accuracy.arima,accuracy(sp,test)[1,5])
+
+#print(sp$model)
+}
+accuracy.arima<-accuracy.arima[-1] 
+
+```
+
+#### Evaluation Summary
+```{r}
+mean(accuracy.tbats)
+mean(accuracy.ets.aan)
+mean(accuracy.ets.mmn)
+mean(accuracy.arima)
+```
+
+```{r}
+arima_forecast <- forecast(fit,971, level=c(0.80,0.90))
+arima_forecast_df <- fortify(arima_forecast)
+cru_AAN_df <- fortify(cru_AAZ_pred)
+cru_MMN_df <- fortify(cru_MMZ_pred)
+cru_tbats_df <- fortify(cru_tbats_pred)
+```
+
+# 3. Comparison of NASA and Met Office Models
+## NASA and Met Office Models Plot
+```{r}
+
+ts.plot(nasa_ts, cru_ts, gpars = list(col = c("dodgerblue1", "darkorange1")), xlab="Year", ylab="Temp Anomaly (F)", main="NASA vs. Met Office Temperature Anomalies")
+legend("topleft", bty="n", lty=c(1,1), col=c("dodgerblue1","darkorange1"),
+       legend=c("NASA", "Met Office"))
+```
+
+## 3.2. Predictions through 2100 for Question 1a
+```{r}
+convert_f_to_c <- function(temp) {
+  celsius <- ((temp - 32) * (5 / 9))
+  return(celsius)
+}
+```
+
+```{r}
+nasa_2101 <- rbind(arima_nasa_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+                   nasa_AAN_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+                   nasa_MMN_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+                   nasa_tbats_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c))
+```
+
+```{r}
+model_type <- c("Arima","AAN", "MMN", "TBATS")
+nasa_2101<-cbind(model_type,nasa_2101)
+nasa_2101
+```
+
+```{r}
+cru_2101 <- rbind(arima_forecast_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+                   cru_AAN_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+                   cru_MMN_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+                   cru_tbats_df %>% filter(Index=="2101-01-01") %>% mutate_if(is.numeric,convert_f_to_c))
+```
+
+```{r}
+model_type <- c("Arima","AAN", "MMN", "TBATS")
+cru_2101<-cbind(model_type,cru_2101)
+cru_2101
+```
+
+```{r}
+#write.csv(nasa_2101, file = "NASA-2101-predictions.csv")
+```
+
+We are asked to determine if through the year 2100, a 2 degree increase in temperature anomaly could be expected. Based on the data from our NASA models, 2 degrees is generally around the point forecast in all models (except for the TBATS), so for the NASA data set, a 2 degree increase in temp is plausible. The 4 degree increase occurs closer to the top of our 90% confidence intervals and appears less likely. Furthermore, we attribute more weight to our Arima model, which did not have 4 degrees within the range of predictions with 90% CI. We prefer the Arima forecast because it produced the lowest MAPE in our 10-year holdout cross validation.
+
+We observed that the Met Office temperature measurements were on average lower than the NASA measurements. There is variance in the measurement methodology. Because of this the forecasts are projected to be lower as well. We see that the models are generally predicting less than a 2 degree temperature anomaly. The 2 degree and 4 degree predictions are in the confidence bounds of the AAN, MMN and TBATS models, but not for Arima, which was our model of choice. Because of this, a 2 and 4 degree temperature anomaly are less likely for Met Office.
+
+We favor the NASA forecasts over the Met Office/CRU temperatures. While researching, the team found an article[1] that studied the temperature measurement process deployed by numerous groups, including NASA and CRU. The study found that the CRU methodology was much less accurate at reproducing global averages and trends than the other methods in a simulated setting. Therefore, we place more stock in the forecasts from the NASA data set and conclude that a 2 degree increase is within reason, whereas the 4 degrees is less likely. 
+
+References
+[1] R. Rohde, "Comparison of Berkeley Earth, NASA GISS, and Hadley CRU averaging techniques on ideal synthetic data", Static.berkeleyearth.org, 2013. [Online]. Available: https://static.berkeleyearth.org/memos/robert-rohde-memo.pdf. [Accessed: 13- May- 2020].
+
+```{r}
+ggplot(nasa_2101, aes(x = model_type, y = `Point Forecast`)) +
+  ggtitle("NASA Point Forecasts in 2101-01-01 with 90% CI") +
+  geom_point(size = 4, color="dodgerblue1") +
+  geom_errorbar(aes(ymax = `Hi 90`, ymin = `Lo 90`), color="dodgerblue1") + 
+  geom_hline(yintercept = 2, linetype="dotted") +
+  geom_text(aes( 0.5, 2, label = 2, vjust = -1), size = 3) + 
+  geom_hline(yintercept = 4, linetype="dotted") +
+  geom_text(aes( 0.5, 4, label = 4, vjust = -1), size = 3) + ylim(-3,6)
+
+```
+
+```{r}
+ggplot(cru_2101, aes(x = model_type, y = `Point Forecast`)) +
+  ggtitle("Met Office Point Forecasts in 2101-01-01 with 90% CI") +
+  geom_point(size = 4, color="darkorange1") +
+  geom_errorbar(aes(ymax = `Hi 90`, ymin = `Lo 90`), , color="darkorange1") + 
+  geom_hline(yintercept = 2, linetype="dotted") +
+  geom_text(aes( 0.5, 2, label = 2, vjust = -1), size = 3) + 
+  geom_hline(yintercept = 4, linetype="dotted") +
+  geom_text(aes( 0.5, 4, label = 4, vjust = -1), size = 3) + ylim(-3,6)
+
+```
+
+## 3.3. Predictions for Various Timeframes for Question 2 using Arima model
+```{r}
+nasa_predictions <- rbind(arima_nasa_df %>% filter(Index=="2030-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+      arima_nasa_df %>% filter(Index=="2030-07-01") %>% mutate_if(is.numeric,convert_f_to_c),
+      arima_nasa_df %>% filter(Index=="2050-01-01") %>% mutate_if(is.numeric,convert_f_to_c), 
+      arima_nasa_df %>% filter(Index=="2050-07-01") %>% mutate_if(is.numeric,convert_f_to_c), 
+      arima_nasa_df %>% filter(Index=="2100-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+      arima_nasa_df %>% filter(Index=="2100-07-01") %>% mutate_if(is.numeric,convert_f_to_c))
+nasa_predictions
+```
+
+```{r}
+cru_predictions <- rbind(arima_forecast_df %>% filter(Index=="2030-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+      arima_forecast_df %>% filter(Index=="2030-07-01") %>% mutate_if(is.numeric,convert_f_to_c),
+      arima_forecast_df %>% filter(Index=="2050-01-01") %>% mutate_if(is.numeric,convert_f_to_c), 
+      arima_forecast_df %>% filter(Index=="2050-07-01") %>% mutate_if(is.numeric,convert_f_to_c), 
+      arima_forecast_df %>% filter(Index=="2100-01-01") %>% mutate_if(is.numeric,convert_f_to_c),
+      arima_forecast_df %>% filter(Index=="2100-07-01") %>% mutate_if(is.numeric,convert_f_to_c))
+cru_predictions
+```
+
+```{r}
+#write.csv(cru_predictions, file = "MetOffice-other-predictions.csv")
+```
+
+```{r}
+#write.csv(nasa_predictions, file = "NASA-other-predictions.csv")
+```
+
+```{r}
+ggplot(nasa_predictions) +
+ aes(x = Index, y = `Point Forecast`) +
+ geom_line(size = 1.5, color="dodgerblue1") +
+  geom_errorbar(aes(ymax = `Hi 90`, ymin = `Lo 90`), size=0.5, linetype="dashed", color="dodgerblue1") + 
+  ggtitle("NASA Arima Forecasts") + 
+  xlab("Date")+ ylim(-0,2.5)
+
+```
+
+```{r}
+ggplot(cru_predictions) +
+ aes(x = Index, y = `Point Forecast`) +
+ geom_line(size = 1.5, color="darkorange1") +
+  geom_errorbar(aes(ymax = `Hi 90`, ymin = `Lo 90`), size=0.5, linetype="dashed", color="darkorange1") + 
+  ggtitle("Met Office Arima Forecasts") + 
+  xlab("Date")+ ylim(-0,2.5)
+
+```
+
+
+
+```{r}
+cru_predictions$type <- "Met Office"
+nasa_predictions$type <- "NASA"
+combined_pred <- rbind(cru_predictions,nasa_predictions)
+```
+
+As we can see below, both the slope and values of the NASA forecasts are higher than the Met Office forecasts. 
+```{r}
+ggplot(combined_pred) +
+ aes(x = Index, y = `Point Forecast`, colour = type) +
+ geom_line(size = 1L) +
+ scale_color_manual(values=c("#ff7f00", "#1e90ff")) +
+  ggtitle("Comparison of NASA and Met Office Arima Point Forecasts") + 
+  xlab("Date") + 
+ theme_minimal()
+```
+
