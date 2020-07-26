@@ -1,4 +1,4 @@
-* 867 IA1 - House Prices.Rmd: Using Lasso Regression for Kaggle House Prices Competition -  Holdout RMSLE: 0.11913 (Top 15%)
+* 867 IA1 - House Prices: Using Lasso Regression for Kaggle House Prices Competition -  Holdout RMSLE: 0.11913 (Top 15%)
 * NASA and Met Office Climate Change: Using Time Series Forecasting to predict climate change  
 * 867 A3 Credit Card Defaults: Using classification, committee ensembles, and tuning cost matrix to identify credit card defaults - Test AUC: 0.7781
 * TitanicMusings: Refreshing my knowledge of Python and sklearn - Holdout Accuracy 77.51%
