@@ -6,3 +6,4 @@
 * 869 - Clustering Jewelry Customers (Q1) - K-means, Hierarhical, DB Scan clustering algorithms applied to customer data for a jewelry store
 * 869 - OJ Classification (Q7) - A variety of classification algorithms used to identify customer purchases of orange juice
 * 869 - SCENE Customer Clustering - Using SCENE customer & transactional data from 2016-2017, I created 8 customer segments of movie go-ers
+* 831 - Customer Propensity to Purchase - Classification for an e-commerce store's dataset predicting customer propensity to purchase. Collaboration with Jaspal Panesar
