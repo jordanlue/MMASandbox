@@ -5,3 +5,4 @@
 * 831 Midterm - VMWare Case Study: Classification and ensemble algorithms for creating a marketing response model on a large data set (600 features, 50K instances). Collaborative project where I completed up until the XGBoost section. Random Forest Holdout Log Loss - 0.0973
 * 869 - Clustering Jewelry Customers (Q1) - K-means, Hierarhical, DB Scan clustering algorithms applied to customer data for a jewelry store
 * 869 - OJ Classification (Q7) - A variety of classification algorithms used to identify customer purchases of orange juice
+* 869 - SCENE Customer Clustering - Using SCENE customer & transactional data from 2016-2017, I created 8 customer segments of movie go-ers
