@@ -1,3 +1,5 @@
+* 823 - Predicting the DJIA using Reddit News - Classification problem for predicting if the Adj Close price of the DJIA will go up or down tomorrow. Used NLP, feature engineering, and stacking ensembles to produce an accuracy of 69% on a fixed test set. Collaboration with Hamza Munir
+
 * 831 - Customer Propensity to Purchase - Classification for an e-commerce store's dataset predicting customer propensity to purchase. Collaboration with Jaspal Panesar
 * 831 Midterm - VMWare Case Study: Classification and ensemble algorithms for creating a marketing response model on a large data set (600 features, 50K instances). Collaborative project where I completed up until the XGBoost section. Random Forest Holdout Log Loss - 0.0973
 
